@@ -1,6 +1,6 @@
 // Service worker: guarda o app para abrir offline. Aumente VERSION ao publicar mudanças.
-const VERSION = 'meu-caixa-v1';
-const CORE = ['./', './index.html', './manifest.webmanifest',
+const VERSION = 'meu-caixa-v2';
+const CORE = ['./', './index.html', './manifest.webmanifest', './supabase-config.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
@@ -16,7 +16,7 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   const sameOrigin = url.origin === location.origin;
-  const isFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
+  const isFont = ['fonts.googleapis.com','fonts.gstatic.com','cdn.jsdelivr.net'].includes(url.hostname);
   if (!sameOrigin && !isFont) return;
   // Páginas: rede primeiro (pega atualização), cache se offline. Resto: cache primeiro.
   if (req.mode === 'navigate') {

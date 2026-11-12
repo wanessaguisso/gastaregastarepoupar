@@ -212,6 +212,8 @@ textarea.copy{width:100%;min-height:180px;padding:10px 12px;border:1px solid var
 <main class="wrap" id="app"></main>
 <input type="file" id="fileIn" accept="application/json,.json" hidden>
 
+<script src="supabase-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js" defer></script>
 <script>
 //<core>
 const CATS=['Moradia','Mercado','Alimentação','Transporte','Saúde','Educação','Lazer','Assinaturas','Compras','Viagem','Dívidas','Outros'];
@@ -476,20 +478,67 @@ async function persist(){
   saving=false;
   if(pending){pending=false;persist();}
 }
-async function initCloud(){
-  try{
-    const user=await use('user'); const db=await use('db');
-    const id=user?await user.id():null;
-    if(!db||!id){setStatus('Salvo só neste navegador');return;}
-    const ref=db.doc('data/users/'+id+'/finance');
-    const snap=await Promise.race([ref.get(),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),10000))]);
-    if(snap.exists){
-      const d=snap.data(); if(d&&d.data&&d.data.expenses){S=ensureState(d.data);loadedFromCloud=true;}
+let sb=null, sbUser=null, lastRemote=null;
+function cloudLabel(){return sbUser?'Conta: '+sbUser.email:(window.SUPABASE_ANON_KEY?'Entrar para sincronizar':'');}
+function makeRef(){
+  return {set:async o=>{
+    const {data,error}=await sb.from('finance_state').upsert({user_id:sbUser.id,data:o.data,updated_at:new Date().toISOString()}).select('updated_at').single();
+    if(error) throw error; lastRemote=data.updated_at;
+  }};
+}
+async function pullRemote(force){
+  const {data,error}=await sb.from('finance_state').select('data,updated_at').eq('user_id',sbUser.id).maybeSingle();
+  if(error) throw error;
+  if(data&&data.data&&data.data.expenses){
+    if(force||data.updated_at!==lastRemote){
+      try{localStorage.setItem('meu-caixa-pre-sync',JSON.stringify(S));}catch(e){}
+      S=ensureState(data.data); lastRemote=data.updated_at; loadedFromCloud=true; render();
     }
-    saveRef=ref; render();
-    setStatus(snap.exists?'Salvo na sua conta':(S.demo?'Exemplo: ainda não salvo':'Salvo só neste navegador'));
-    if(!snap.exists&&!S.demo) persist();
-  }catch(e){setStatus('Sem conexão com a nuvem; usando cópia local');}
+    return true;
+  }
+  return false;
+}
+async function onSession(session){
+  sbUser=session?session.user:null; saveRef=null;
+  if(!sbUser){setStatus('Salvo só neste navegador');render();return;}
+  try{
+    saveRef=makeRef();
+    const had=await pullRemote(true);
+    setStatus(had?'Salvo na sua conta':(S.demo?'Exemplo: ainda não salvo':'Sincronizando…'));
+    if(!had&&!S.demo) await persist();
+    render();
+  }catch(e){saveRef=null;setStatus('Sem conexão com a nuvem; usando cópia local');}
+}
+async function initCloud(){
+  if(!window.SUPABASE_ANON_KEY||!window.supabase){setStatus('Salvo só neste navegador');return;}
+  try{
+    sb=window.supabase.createClient(window.SUPABASE_URL,window.SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
+    sb.auth.onAuthStateChange((ev,session)=>{ if(ev==='SIGNED_IN'||ev==='SIGNED_OUT'||ev==='INITIAL_SESSION') setTimeout(()=>onSession(session),0); });
+    document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&sbUser&&saveRef&&!saving&&!pending) pullRemote(false).catch(()=>{}); });
+  }catch(e){setStatus('Salvo só neste navegador');}
+}
+function openAccount(){
+  if(!sb){toast('Sincronização não configurada.');return;}
+  if(sbUser){
+    openModal({title:'Sua conta',body:`<p>Conectado como <b>${esc(sbUser.email)}</b>.</p><p class="muted small">Seus dados são sincronizados entre os aparelhos em que você entrar com esta conta.</p>`,submit:'Sair',danger:true,onSubmit:()=>{sb.auth.signOut();}});
+    return;
+  }
+  openModal({title:'Entrar para sincronizar',submit:'Entrar',
+    body:field('E-mail','<input name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none">')+field('Senha','<input name="pw" type="password" autocomplete="current-password">','Mínimo de 6 caracteres.')+`<button type="button" class="btn" data-action="auth-up">Criar conta nova</button>`,
+    onSubmit:f=>{
+      const email=String(f.get('email')||'').trim(), pw=String(f.get('pw')||'');
+      if(!email||!pw) return 'Informe e-mail e senha.';
+      sb.auth.signInWithPassword({email,password:pw}).then(r=>{ if(r.error) toast('Não entrou: '+(/invalid/i.test(r.error.message)?'e-mail ou senha incorretos.':r.error.message)); else toast('Conectado.'); });
+    }});
+}
+async function signUp(){
+  const f=modalEl&&modalEl.querySelector('form'); if(!f) return;
+  const email=f.email.value.trim(), pw=f.pw.value;
+  if(!email||pw.length<6){setErr('Informe e-mail e uma senha de pelo menos 6 caracteres.');return;}
+  const r=await sb.auth.signUp({email,password:pw});
+  if(r.error){setErr(r.error.message);return;}
+  closeModal();
+  toast(r.data.session?'Conta criada e conectada.':'Conta criada. Confirme pelo e-mail que enviamos e depois entre.');
 }
 
 /* ---- derived ---- */
@@ -736,7 +785,7 @@ function render(){
   document.getElementById('mlabel').textContent=mShort(sel).replace('/',' / ');
   document.querySelectorAll('#tabs a').forEach(a=>{if(a.dataset.tab===tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
   const demo=S.demo?`<div class="banner"><p><b>Dados de exemplo.</b> Mexa à vontade para conhecer o app e, quando quiser, comece do zero.</p><button class="btn" data-action="clear-demo">Limpar exemplos</button></div>`:'';
-  const tools=`<footer class="tools"><button data-action="imp-fatura">Importar fatura (CSV)</button><button data-action="export-csv">Exportar ${mShort(sel)} (CSV)</button><button data-action="export-json">Backup (JSON)</button><button data-action="import">Restaurar backup</button><button data-action="reset">Apagar tudo</button></footer>`;
+  const tools=`<footer class="tools"><button data-action="imp-fatura">Importar fatura (CSV)</button><button data-action="export-csv">Exportar ${mShort(sel)} (CSV)</button><button data-action="export-json">Backup (JSON)</button><button data-action="import">Restaurar backup</button><button data-action="reset">Apagar tudo</button>${cloudLabel()?`<button data-action="account">${esc(cloudLabel())}</button>`:''}</footer>`;
   document.getElementById('app').innerHTML=demo+(views[tab]||views.painel)()+tools;
 }
 
@@ -976,6 +1025,8 @@ document.addEventListener('click',ev=>{
   const a=t.dataset.action, id=t.dataset.id;
   switch(a){
     case 'close': closeModal(); break;
+    case 'account': openAccount(); break;
+    case 'auth-up': signUp(); break;
     case 'prev': sel=addM(sel,-1); render(); break;
     case 'next': sel=addM(sel,1); render(); break;
     case 'today': sel=CUR; render(); break;
@@ -1024,7 +1075,7 @@ function route(){const h=location.hash.replace('#','');tab=TABS.includes(h)?h:'p
 window.addEventListener('hashchange',route);
 
 route();
-initCloud();
+window.addEventListener("load",initCloud);
 if("serviceWorker" in navigator&&location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));}
 </script>
 </body>
