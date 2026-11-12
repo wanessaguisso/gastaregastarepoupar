@@ -1,0 +1,27 @@
+# Netlify: site estático. O build só gera supabase-config.js a partir das variáveis de ambiente
+# SUPABASE_URL e SUPABASE_ANON_KEY (Site settings > Environment variables).
+[build]
+  publish = "."
+  command = "node scripts/gen-config.js"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/supabase-config.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/fonts/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

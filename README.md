@@ -1,40 +1,41 @@
-# Gastar, Gastar, Repoupar — Meu Caixa
+# Meu Caixa
 
-App web de finanças pessoais (HTML/CSS/JS em um único arquivo, sem build).
+App web de finanças pessoais (HTML/CSS/JS puro, sem framework). Instalável no celular (PWA), funciona offline e sincroniza entre aparelhos via Supabase (opcional).
 
 ## Recursos
-- **Painel**: sobra prevista do mês, divisão da renda e projeção de 12 meses
-- **Mês**: lançamentos agrupados por cartão/forma de pagamento, marcação de pago
-- **Cartões**: fatura, limite usado e disponível; importação de fatura em CSV
-- **Parcelas**: compras parceladas em andamento e queda de parcelas ao longo do tempo
-- **Pessoas**: gastos de terceiros e controle de quem já pagou
-- **Fixos e renda**: despesas recorrentes e entradas
-- **Projetos**: metas com valor, prazo e aporte mensal
-- Backup/restauração em JSON; tema claro/escuro automático
+- **Gasto rápido**: botão **+** fixo; valor, descrição, pagamento e categoria em poucos toques (lembra o último cartão e sugere a categoria).
+- **Painel**: sobra prevista, divisão da renda, projeção de 12 meses, vencimentos próximos e alertas de orçamento.
+- **Orçamento por categoria**: teto mensal com aviso a partir de 80%.
+- **Lembretes de vencimento**: faturas e boletos (notificação local ao abrir o app).
+- **Cartões, Parcelas, Pessoas, Fixos e renda, Projetos**.
+- **Importar fatura** em **CSV ou OFX**; o app aprende suas categorias (descrições parecidas viram a mesma categoria).
+- Backup/restauração em JSON, exportação CSV, tema claro/escuro.
 
-## Abrir no celular (PWA)
-O app é instalável e funciona offline depois da primeira abertura.
-1. Publique no GitHub Pages: no repositório, **Settings → Pages → Source: GitHub Actions**.
-2. Faça merge na `main`; o workflow `.github/workflows/pages.yml` publica em
-   `https://wanessaguisso.github.io/gastaregastarepoupar/`.
-3. No celular, abra o link e use **Adicionar à tela inicial** (Safari: Compartilhar → Adicionar à Tela de Início; Chrome: menu ⋮ → Instalar app).
+## Hospedar no Netlify
+1. Netlify → **Add new site → Import from Git** → escolha este repositório e a branch `main` (o `netlify.toml` já define tudo; não precisa preencher build/publish).
+2. (Para sincronizar) **Site configuration → Environment variables**, crie:
+   - `SUPABASE_URL` = `https://jpbfezjhtvicuusdankd.supabase.co`
+   - `SUPABASE_ANON_KEY` = chave **anon public** (Supabase → Project Settings → API)
+3. Faça o deploy. No celular, abra o link e **Adicionar à tela inicial** (iPhone: Safari → Compartilhar; Android: Chrome → ⋮ → Instalar app).
 
-Os dados ficam só no celular. Use o backup JSON (rodapé do app) para guardar ou levar os dados a outro aparelho.
-Ao alterar o app, aumente `VERSION` em `sw.js` para os celulares receberem a atualização.
+Sem `SUPABASE_ANON_KEY` o app funciona normalmente, só que salvando apenas no aparelho.
+> Nunca use a senha do Postgres nem a chave `service_role`: o build recusa a `service_role`, e o app só precisa da `anon`.
 
-## Sincronizar com o Supabase (opcional)
-Com isso, os dados passam a ser salvos na sua conta e aparecem em todos os aparelhos.
-1. No Supabase, abra **SQL Editor**, cole o conteúdo de `supabase/schema.sql` e rode (cria a tabela `finance_state` com RLS).
-2. Em **Project Settings → API**, copie a chave **anon public** e cole em `supabase-config.js` (`SUPABASE_ANON_KEY`).
-3. Em **Authentication → URL Configuration**, ponha o link do app (GitHub Pages) em *Site URL*. Se não quiser confirmar e-mail, desligue *Confirm email* em Authentication → Providers → Email.
-4. No app, rodapé → **Entrar para sincronizar** → crie a conta.
+## Sincronizar com o Supabase
+1. No Supabase → **SQL Editor**, rode o conteúdo de `supabase/schema.sql` (tabela `finance_state` com RLS: cada usuário só acessa a própria linha).
+2. Authentication → URL Configuration: ponha o endereço do Netlify em **Site URL**. Para não exigir confirmação por e-mail, desligue *Confirm email* (Authentication → Providers → Email).
+3. No app, rodapé → **Entrar para sincronizar** e crie a conta.
 
-Segurança: o app usa só a URL e a chave `anon` (públicas). **Nunca** ponha a senha do Postgres nem a chave `service_role` no projeto; quem protege os dados é o RLS.
-Ao entrar, se já houver dados na nuvem eles substituem os locais; uma cópia dos locais fica em `localStorage['meu-caixa-pre-sync']`.
+Detalhes: ao entrar, os dados da nuvem substituem os locais (uma cópia fica em `localStorage['meu-caixa-pre-sync']`). Se dois aparelhos editarem ao mesmo tempo, o app mostra um aviso de conflito e você escolhe qual versão vale.
 
-## Como usar no computador
-Abra `index.html` no navegador (ou sirva a pasta: `python3 -m http.server`).
-Os dados ficam no `localStorage` do navegador (chave `meu-caixa-v1`).
+## Desenvolvimento
+```bash
+npm test                      # testes da lógica financeira (Node 18+, sem dependências)
+python3 -m http.server 8000   # abrir http://localhost:8000
+```
+- `app.js`: o trecho entre `//<core>` e `//</core>` é lógica pura e é o que os testes carregam.
+- `sw.js`: ao mudar o app, aumente `VERSION` para limpar o cache antigo.
+- Fontes e `supabase-js` ficam no repositório (`fonts/`, `vendor-supabase.js`); não há dependência de CDN.
 
-## Origem
-Projeto criado a partir do artefato "Meu Caixa".
+## Fora do escopo (ideias futuras)
+Contas com saldo real, conta compartilhada entre pessoas e leitura de PDF de fatura exigem mudar o modelo de dados e não foram feitos.

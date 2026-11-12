@@ -1,6 +1,7 @@
 // Service worker: guarda o app para abrir offline. Aumente VERSION ao publicar mudanças.
-const VERSION = 'meu-caixa-v2';
-const CORE = ['./', './index.html', './manifest.webmanifest', './supabase-config.js',
+const VERSION = 'meu-caixa-v3';
+const CORE = ['./', './index.html', './styles.css', './app.js', './vendor-supabase.js', './manifest.webmanifest', './supabase-config.js',
+  './fonts/bricolage.woff2', './fonts/public-sans.woff2',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
@@ -16,17 +17,17 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   const sameOrigin = url.origin === location.origin;
-  const isFont = ['fonts.googleapis.com','fonts.gstatic.com','cdn.jsdelivr.net'].includes(url.hostname);
-  if (!sameOrigin && !isFont) return;
-  // Páginas: rede primeiro (pega atualização), cache se offline. Resto: cache primeiro.
-  if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).then(r => {
-      const copy = r.clone(); caches.open(VERSION).then(c => c.put('./index.html', copy)); return r;
-    }).catch(() => caches.match('./index.html')));
-    return;
-  }
-  e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(r => {
-    if (r.ok || r.type === 'opaque') { const copy = r.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
+  if (!sameOrigin) return;
+  // Rede primeiro (sempre pega a versão nova); sem rede, usa o que está guardado.
+  e.respondWith(fetch(req).then(r => {
+    if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
     return r;
-  })));
+  }).catch(() => caches.match(req).then(hit => hit || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error()))));
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
+    const c = cs.find(x => 'focus' in x); return c ? c.focus() : self.clients.openWindow('./');
+  }));
 });
