@@ -687,6 +687,10 @@ function render(){
 }
 
 /* ---- divisão da compra: lê o formulário e valida ---- */
+function splitRow(p,i,cur,sm,checked){
+  const v=cur&&sm!=='eq'?(sm==='pct'?String(cur.w).replace('.',','):fmtIn(cur.w)):'';
+  return `<label class="srow"><input class="chk" type="checkbox" name="sp${i}" ${cur||checked?'checked':''} aria-label="Incluir ${esc(p.name)} na divisão"><span>${esc(p.name)}</span><input class="sv" name="sv${i}" inputmode="decimal" value="${v}" aria-label="Parte de ${esc(p.name)}"></label>`;
+}
 const splitPeople=()=>[{id:'',name:'Eu'},...S.people.map(p=>({id:p.id,name:p.name}))];
 function readSplit(get,amount){
   const mode=get('smode')||'none'; if(mode==='none') return {mode,parts:null};
@@ -805,8 +809,8 @@ function expForm(id,presetKind){
       <div id="w-who">${field('De quem é',`<select name="who">${opts(whoOpts(),d.who||'')}</select>`,'Quem usou o cartão nesta compra.')}</div>
     </div>
     <fieldset><legend>Dividir esta compra com outras pessoas</legend>${seg('smode',[['none','Não'],['eq','Igual'],['pct','Por %'],['val','Por valor']],sm)}
-      <div id="w-split" hidden>${splitPeople().map((p,i)=>{const cur=(d.split||[]).find(x=>x.who===p.id);return `<label class="srow"><input class="chk" type="checkbox" name="sp${i}" ${cur?'checked':''} aria-label="Incluir ${esc(p.name)} na divisão"><span>${esc(p.name)}</span><input class="sv" name="sv${i}" inputmode="decimal" value="${cur&&sm!=='eq'?(sm==='pct'?String(cur.w).replace('.',','):fmtIn(cur.w)):''}" aria-label="Parte de ${esc(p.name)}"></label>`;}).join('')}
-      ${S.people.length?'':'<p class="muted small">Cadastre pessoas na aba Pessoas para dividir compras.</p>'}</div>
+      <div class="addp" id="addp-always"><input id="newp" maxlength="30" autocomplete="off" placeholder="Nova pessoa (nome)" aria-label="Nome da nova pessoa"><button type="button" class="btn sm" id="addp">+ Adicionar pessoa</button></div>
+      <div id="w-split" hidden><div id="split-rows">${splitPeople().map((p,i)=>splitRow(p,i,(d.split||[]).find(x=>x.who===p.id),sm)).join('')}</div></div>
     </fieldset>
     <div class="preview" id="prev" aria-live="polite"></div>`;
   openModal({title:e?'Editar lançamento':'Novo lançamento',body,onChange:f=>{
@@ -846,8 +850,25 @@ function expForm(id,presetKind){
     learnCat(S,desc,rec.cat); S.last={method:rec.method,cat:rec.cat};
     commit();
   },onDelete:e?()=>{S.expenses=S.expenses.filter(x=>x.id!==e.id);for(const m of [S.paid,S.settled])Object.keys(m).forEach(k=>{if(k.startsWith(e.id+'#'))delete m[k];});commit();}:null});
+  const form0=modalEl.querySelector('form');
+ /* cria pessoa sem sair do lançamento */
+  const addPerson=()=>{
+    const inp=form0.querySelector('#newp'), name=inp.value.trim();
+    if(!name){setErr('Digite o nome da pessoa.');inp.focus();return;}
+    if(name.toLowerCase()==='eu'||S.people.some(x=>x.name.toLowerCase()===name.toLowerCase())){setErr('Já existe uma pessoa com esse nome.');inp.focus();return;}
+    const person={id:'pe'+uid(),name,color:SWATCH[S.people.length%SWATCH.length]};
+    S.people.push(person);
+    const i=splitPeople().length-1, mode=form0.elements.smode.value;
+    form0.querySelector('#split-rows').insertAdjacentHTML('beforeend',splitRow({id:person.id,name},i,null,mode,mode!=='none'));
+    const opt=document.createElement('option'); opt.value=person.id; opt.textContent=name; form0.elements.who.appendChild(opt);
+    if(mode==='none') form0.elements.who.value=person.id;
+    inp.value=''; setErr(''); commit(); toast(name+' adicionada.');
+    form0.dispatchEvent(new Event('input',{bubbles:true}));
+  };
+  form0.querySelector('#addp').addEventListener('click',addPerson);
+  form0.querySelector('#newp').addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();ev.stopPropagation();addPerson();}});
   /* ao escolher dividir, já marca "Eu" e a pessoa do campo "De quem é" (ou a primeira cadastrada) */
-  const form=modalEl.querySelector('form');
+  const form=form0;
   form.addEventListener('change',ev=>{
     if(ev.target.name!=='smode'||ev.target.value==='none') return;
     const boxes=splitPeople().map((p,i)=>form.elements['sp'+i]);
