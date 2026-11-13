@@ -187,3 +187,8 @@ nav.tabs{-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 14px,#000 c
   footer.tools button{padding:10px 0}
 }
 @media print{.fab,header.top nav,footer.tools{display:none}}
+
+.srow{display:grid;grid-template-columns:auto minmax(0,1fr) 110px;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.srow:first-child{margin-top:8px}
+.srow input.sv{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-height:40px;text-align:right}
+.srow input.sv[hidden]{display:none}

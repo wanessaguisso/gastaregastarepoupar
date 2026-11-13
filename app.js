@@ -26,6 +26,9 @@ function installmentAmount(total,n,i){
   return i<n-1?base:r2(total-base*(n-1));
 }
 function chargesOf(e,cards,horizon){
+  return expandParts(e,chargesRaw(e,cards,horizon));
+}
+function chargesRaw(e,cards,horizon){
   const out=[]; const s=billMonth(e,cards);
   if(e.kind==='avista'){out.push({key:e.id+'#0',eid:e.id,ym:s,amount:r2(e.amount),i:0,n:1});}
   else if(e.kind==='parcelado'){
@@ -42,7 +45,28 @@ function allCharges(S,horizon){
   for(const e of S.expenses) for(const c of chargesOf(e,S.cards,horizon)){c.e=e;out.push(c);}
   return out;
 }
-function isPaid(S,c,cur){return S.paid[c.key]!==undefined?S.paid[c.key]:c.ym<cur;}
+function isPaid(S,c,cur){const k=c.pkey||c.key;return S.paid[k]!==undefined?S.paid[k]:c.ym<cur;}
+/* ---- divisão de compra entre pessoas ----
+   e.split = [{who:'' (eu) | id da pessoa, w:peso}], com 2 ou mais participantes.
+   Cada cobrança vira uma "parte" por pessoa; as partes somam exatamente o valor cheio. */
+function splitAmount(amount,weights){
+  const cents=Math.round(amount*100), sw=weights.reduce((a,w)=>a+w,0);
+  if(!(sw>0)) return weights.map(()=>0);
+  const out=weights.map(w=>Math.floor(cents*w/sw));
+  let rest=cents-out.reduce((a,b)=>a+b,0);
+  for(let i=0;rest>0;i=(i+1)%out.length,rest--) if(weights[i]>0) out[i]++; else rest++;
+  return out.map(c=>c/100);
+}
+function activeSplit(e){return Array.isArray(e.split)&&e.split.length>=2&&e.split.every(p=>p.w>0)?e.split:null;}
+function expandParts(e,list){
+  const sp=activeSplit(e); const out=[];
+  for(const c of list){
+    if(!sp){out.push(Object.assign(c,{pkey:c.key,full:c.amount,who:e.who||'',lead:true}));continue;}
+    const amts=splitAmount(c.amount,sp.map(p=>p.w));
+    sp.forEach((p,k)=>out.push({key:c.key+'@'+(p.who||'me'),pkey:c.key,eid:c.eid,ym:c.ym,amount:amts[k],full:c.amount,i:c.i,n:c.n,who:p.who||'',lead:k===0}));
+  }
+  return out;
+}
 function incomeIn(S,ym){
   return r2(S.income.reduce((a,i)=>a+(i.kind==='mensal'?i.amount:(i.month===ym?i.amount:0)),0));
 }
@@ -92,13 +116,13 @@ function dueList(S,charges,today,windowDays){
   const push=(label,date,amount,key)=>{const days=toDays(date)-t; if(days<=windowDays) out.push({label,date,amount:r2(amount),days,key});};
   for(const ym of [addM(cur,-1),cur,addM(cur,1)]){
     for(const c of S.cards){
-      const items=charges.filter(x=>x.ym===ym&&x.e.method===c.id&&!x.e.who);
+      const items=charges.filter(x=>x.ym===ym&&x.e.method===c.id);
       const open=items.filter(x=>!isPaid(S,x,cur)); if(!open.length) continue;
       push('Fatura '+c.name,dateOf(ym,c.due),open.reduce((a,x)=>a+x.amount,0),c.id+'@'+ym);
     }
     for(const x of charges){
-      if(x.ym!==ym||x.e.method!=='boleto'||x.e.who||isPaid(S,x,cur)) continue;
-      push(x.e.desc,dateOf(ym,Number(x.e.date.slice(8,10))),x.amount,x.key);
+      if(x.ym!==ym||x.e.method!=='boleto'||!x.lead||isPaid(S,x,cur)) continue;
+      push(x.e.desc,dateOf(ym,Number(x.e.date.slice(8,10))),x.full,x.pkey);
     }
   }
   return out.filter(d=>d.days>=-31).sort((a,b)=>a.days-b.days);
@@ -410,7 +434,7 @@ const cardOf=id=>S.cards.find(c=>c.id===id);
 const paid=c=>isPaid(S,c,CUR);
 
 function allocBar(ym){
-  const t=totalsOf(inMonth(ym).filter(c=>!c.e.who)), inc=incomeIn(S,ym), pl=plannedIn(S,ym,CUR);
+  const t=totalsOf(inMonth(ym).filter(c=>!c.who)), inc=incomeIn(S,ym), pl=plannedIn(S,ym,CUR);
   const left=r2(inc-t.total-pl);
   const segs=[['fixo','Fixos',t.fixo],['parc','Parcelas',t.parcelado],['avul','Avulsos',t.avista],['proj','Projetos',pl]];
   const used=t.total+pl; const base=Math.max(inc,used)||1;
@@ -424,7 +448,7 @@ function allocBar(ym){
 const views={};
 
 views.painel=function(){
-  const mine=c=>!c.e.who;
+  const mine=c=>!c.who;
   const chAll=inMonth(sel), ch=chAll.filter(mine), a=allocBar(sel);
   const othersAmt=r2(totalsOf(chAll).total-a.t.total);
   const paidSum=r2(ch.filter(paid).reduce((s,c)=>s+c.amount,0)), toPay=r2(a.t.total-paidSum);
@@ -484,8 +508,8 @@ views.painel=function(){
   const dues=sel===CUR?dueList(S,ALL,todayStr(),7):[];
   const dueHtml=dues.length?`<section class="card c12" aria-label="Vencimentos"><div class="card-h"><h2>Vencimentos próximos</h2><button class="btn sm" data-action="notif">${'Notification' in window&&Notification.permission==='granted'?'Lembretes ativos':'Ativar lembretes'}</button></div>${dues.map(d=>`<div class="row nochk" style="padding-left:0;padding-right:0"><div><div class="t">${esc(d.label)}</div><div class="m ${d.days<0?'neg':''}">${d.days<0?`venceu há ${-d.days} dia${d.days===-1?'':'s'}`:d.days===0?'vence hoje':d.days===1?'vence amanhã':`vence em ${d.days} dias`} · ${dm(d.date)}</div></div><div class="v num">${money(d.amount)}</div></div>`).join('')}</section>`:'';
   // por pessoa
-  const whoRows=whoOpts().map(([id,name])=>({id,name,v:r2(chAll.filter(c=>(c.e.who||'')===id).reduce((s,c)=>s+c.amount,0))}));
-  const owedNow=r2(ALL.filter(c=>c.e.who&&c.ym<=sel&&!S.settled[c.key]).reduce((s,c)=>s+c.amount,0));
+  const whoRows=whoOpts().map(([id,name])=>({id,name,v:r2(chAll.filter(c=>c.who===id).reduce((s,c)=>s+c.amount,0))}));
+  const owedNow=r2(ALL.filter(c=>c.who&&c.ym<=sel&&!S.settled[c.key]).reduce((s,c)=>s+c.amount,0));
   const wmax=Math.max(1,...whoRows.map(r=>r.v));
   const whoHtml=`<div class="bars">${whoRows.map(r=>`<div class="br"><span>${esc(r.name)}</span><div class="bar"><i style="width:${r.v/wmax*100}%"></i></div><b class="num" style="text-align:right">${money(r.v)}</b></div>`).join('')}</div><p class="note">${owedNow>0?`<b class="num">${money(owedNow)}</b> a receber das outras pessoas até ${mShort(sel)}. <a href="#pessoas">Ver quem deve</a>`:'Nada a receber das outras pessoas.'}</p>`;
   // projects
@@ -523,11 +547,12 @@ views.painel=function(){
 };
 
 views.mes=function(){
-  const ch=inMonth(sel).filter(c=>(filter==='todos'||c.e.kind===filter)&&(pfilter==='todos'||(pfilter==='_me'?!c.e.who:c.e.who===pfilter)));
+  const ch=inMonth(sel).filter(c=>(filter==='todos'||c.e.kind===filter)&&(pfilter==='todos'||(pfilter==='_me'?!c.who:c.who===pfilter)));
   const pchips=[['todos','Todas as pessoas'],['_me','Meus'],...S.people.map(p=>[p.id,p.name])].map(([k,l])=>`<button type="button" class="chip" data-action="pfilter" data-f="${esc(k)}" aria-pressed="${pfilter===k}">${esc(l)}</button>`).join('');
   const chips=[['todos','Tudo'],['fixo','Fixos'],['parcelado','Parcelas'],['avista','Avulsos']].map(([k,l])=>`<button type="button" class="chip" data-action="filter" data-f="${k}" aria-pressed="${filter===k}">${l}</button>`).join('')+`<button type="button" class="btn sm" data-action="imp-fatura" style="margin-left:auto">Importar fatura (CSV/OFX)</button>`;
+  const merged=pfilter==='todos'?[...ch.reduce((m,c)=>{const g=m.get(c.pkey);if(g){g.amount=r2(g.amount+c.amount);g.parts.push(c);}else m.set(c.pkey,Object.assign({},c,{parts:[c]}));return m;},new Map()).values()]:ch.map(c=>Object.assign({},c,{parts:[c]}));
   const order=[...S.cards.map(c=>c.id),...METHODS.map(m=>m.id)];
-  const groups=order.map(id=>({id,list:ch.filter(c=>c.e.method===id)})).filter(g=>g.list.length);
+  const groups=order.map(id=>({id,list:merged.filter(c=>c.e.method===id)})).filter(g=>g.list.length);
   const body=groups.length?groups.map(g=>{
     const sub=r2(g.list.reduce((s,c)=>s+c.amount,0)), cd=cardOf(g.id);
     const head=cd?`<span><i class="cardtag" style="background:${esc(cd.color)}"></i>${esc(cd.name)} <span class="muted small">fatura · vence dia ${cd.due}</span></span>`:`<span>${esc(methodName(g.id))}</span>`;
@@ -535,8 +560,9 @@ views.mes=function(){
     const act=cd?`<button class="btn sm" data-action="pay-card" data-id="${cd.id}" data-v="${allPaid?0:1}">${allPaid?'Desmarcar fatura':'Marcar fatura paga'}</button>`:'';
     return `<div class="group-h">${head}<span style="display:flex;gap:10px;align-items:center"><b class="num">${money(sub)}</b>${act}</span></div>`+g.list.sort((a,b)=>b.amount-a.amount).map(c=>{
       const meta=[c.e.cat,c.e.kind==='parcelado'?`parcela ${c.i+1}/${c.n}`:c.e.kind==='fixo'?'fixo':`à vista, ${dm(c.e.date)}`].join(' · ');
-      const p=paid(c);
-      return `<div class="row click ${p?'paid':''}"><input class="chk" type="checkbox" data-action="paid" data-key="${esc(c.key)}" ${p?'checked':''} aria-label="Marcar ${esc(c.e.desc)} como pago"><div><div class="t">${esc(c.e.desc)} ${ptag(c.e.who)}</div><div class="m">${esc(meta)}</div></div><div style="display:flex;gap:10px;align-items:center"><span class="v num">${money(c.amount)}</span><button class="btn sm ghost" data-action="edit-exp" data-id="${c.e.id}" aria-label="Editar ${esc(c.e.desc)}">Editar</button></div></div>`;
+      const p=paid(c), multi=c.parts.length>1, one=!multi&&c.e.split&&activeSplit(c.e);
+      const splitTxt=multi?`dividido: ${c.parts.map(x=>`${esc(x.who?pName(x.who):'Eu')} ${money(x.amount)}`).join(' · ')}`:one?`sua visão: parte de ${esc(pName(c.who)||'Eu')} em compra de ${money(c.full)}`:'';
+      return `<div class="row click ${p?'paid':''}"><input class="chk" type="checkbox" data-action="paid" data-key="${esc(c.pkey)}" ${p?'checked':''} aria-label="Marcar ${esc(c.e.desc)} como pago"><div><div class="t">${esc(c.e.desc)} ${multi?'<span class="ptag">dividido</span>':ptag(c.who)}</div><div class="m">${esc(meta)}</div>${splitTxt?`<div class="m">${splitTxt}</div>`:''}</div><div style="display:flex;gap:10px;align-items:center"><span class="v num">${money(c.amount)}</span><button class="btn sm ghost" data-action="edit-exp" data-id="${c.e.id}" aria-label="Editar ${esc(c.e.desc)}">Editar</button></div></div>`;
     }).join('');
   }).join(''):`<div class="empty">Nada lançado em ${mLong(sel)}.<br><button class="btn primary" data-action="new-exp">+ Lançamento</button></div>`;
   const tot=totalsOf(ch);
@@ -568,9 +594,10 @@ views.cartoes=function(){
 
 views.parcelas=function(){
   const items=S.expenses.filter(e=>e.kind==='parcelado').map(e=>{
-    const cs=ALL.filter(c=>c.eid===e.id); const pd=cs.filter(paid).length;
-    const rem=r2(cs.filter(c=>!paid(c)).reduce((s,c)=>s+c.amount,0));
-    return {e,cs,pd,rem,last:cs[cs.length-1].ym,each:cs[0].amount};
+    const cs=ALL.filter(c=>c.eid===e.id&&c.lead); const pd=cs.filter(paid).length;
+    const rem=r2(cs.filter(c=>!paid(c)).reduce((s,c)=>s+c.full,0));
+    const mine=r2(ALL.filter(c=>c.eid===e.id&&!c.who&&!paid(c)).reduce((s,c)=>s+c.amount,0));
+    return {e,cs,pd,rem,mine,last:cs[cs.length-1].ym,each:cs[0].full};
   });
   const active=items.filter(i=>i.rem>0).sort((a,b)=>a.last<b.last?-1:1), done=items.filter(i=>i.rem<=0);
   const totalRem=r2(active.reduce((s,i)=>s+i.rem,0));
@@ -579,7 +606,7 @@ views.parcelas=function(){
   const vals=months.map(m=>r2(inMonth(m).filter(c=>c.e.kind==='parcelado').reduce((s,c)=>s+c.amount,0)));
   const mx=Math.max(1,...vals);
   const chart=`<div class="mini" style="height:90px;grid-template-columns:repeat(12,1fr)" aria-hidden="true">${vals.map((v,i)=>`<div class="${i===0?'cur':''}"><i style="height:${Math.max(2,v/mx*100)}%;background:var(--parc)" title="${mShort(months[i])}: ${money(v)}"></i></div>`).join('')}</div><div class="mini-l" style="grid-template-columns:repeat(12,1fr)">${months.map(m=>`<span>${m.slice(5)}</span>`).join('')}</div>`;
-  const rows=active.map(i=>{const pct=i.pd/i.cs.length*100;return `<div class="row nochk"><div><div class="t">${esc(i.e.desc)} <span class="pill">${i.pd}/${i.cs.length}</span></div><div class="m">${esc(methodName(i.e.method))} · ${money(i.each)} por mês · termina em ${mShort(i.last)}</div><div class="meter" style="margin-top:8px"><i style="width:${pct}%"></i></div></div><div style="display:flex;gap:10px;align-items:center"><div class="v num">${money(i.rem)}<div class="m" style="font-weight:400">falta pagar</div></div><button class="btn sm ghost" data-action="edit-exp" data-id="${i.e.id}">Editar</button></div></div>`;}).join('');
+  const rows=active.map(i=>{const pct=i.pd/i.cs.length*100;return `<div class="row nochk"><div><div class="t">${esc(i.e.desc)} <span class="pill">${i.pd}/${i.cs.length}</span></div><div class="m">${esc(methodName(i.e.method))} · ${money(i.each)} por mês · termina em ${mShort(i.last)}${activeSplit(i.e)?` · sua parte falta ${money(i.mine)}`:''}</div><div class="meter" style="margin-top:8px"><i style="width:${pct}%"></i></div></div><div style="display:flex;gap:10px;align-items:center"><div class="v num">${money(i.rem)}<div class="m" style="font-weight:400">falta pagar</div></div><button class="btn sm ghost" data-action="edit-exp" data-id="${i.e.id}">Editar</button></div></div>`;}).join('');
   return `<div class="grid">
     <section class="card c4"><div class="eyebrow">Ainda a pagar em parcelas</div><div class="big num" style="font-size:38px">${money(totalRem)}</div><p class="small muted">${active.length} compra${active.length===1?'':'s'} em andamento</p></section>
     <section class="card c4"><div class="eyebrow">Parcelas em ${mShort(sel)}</div><div class="big num" style="font-size:38px">${money(nowMonth)}</div><p class="small muted">Pesa ${incomeIn(S,sel)>0?Math.round(nowMonth/incomeIn(S,sel)*100)+'% da renda do mês':'no orçamento do mês'}</p></section>
@@ -591,13 +618,13 @@ views.parcelas=function(){
 
 views.pessoas=function(){
   const cards=S.people.map(p=>{
-    const ch=inMonth(sel).filter(c=>c.e.who===p.id).sort((a,b)=>b.amount-a.amount);
+    const ch=inMonth(sel).filter(c=>c.who===p.id).sort((a,b)=>b.amount-a.amount);
     const tot=r2(ch.reduce((s,c)=>s+c.amount,0));
-    const open=ALL.filter(c=>c.e.who===p.id&&c.ym<=sel&&!S.settled[c.key]);
+    const open=ALL.filter(c=>c.who===p.id&&c.ym<=sel&&!S.settled[c.key]);
     const owed=r2(open.reduce((s,c)=>s+c.amount,0));
     const before=r2(open.filter(c=>c.ym<sel).reduce((s,c)=>s+c.amount,0));
     const all=ch.length&&ch.every(c=>S.settled[c.key]);
-    const rows=ch.map(c=>{const rc=!!S.settled[c.key];return `<div class="row ${rc?'paid':''}"><input class="chk" type="checkbox" data-action="settled" data-key="${esc(c.key)}" ${rc?'checked':''} aria-label="Marcar ${esc(c.e.desc)} como recebido"><div><div class="t">${esc(c.e.desc)}</div><div class="m">${esc(methodName(c.e.method))} · ${esc(c.e.cat)}${c.e.kind==='parcelado'?` · parcela ${c.i+1}/${c.n}`:''}</div></div><div style="display:flex;gap:8px;align-items:center"><span class="v num">${money(c.amount)}</span><button class="btn sm ghost" data-action="edit-exp" data-id="${c.e.id}" aria-label="Editar ${esc(c.e.desc)}">Editar</button></div></div>`;}).join('');
+    const rows=ch.map(c=>{const rc=!!S.settled[c.key];return `<div class="row ${rc?'paid':''}"><input class="chk" type="checkbox" data-action="settled" data-key="${esc(c.key)}" ${rc?'checked':''} aria-label="Marcar ${esc(c.e.desc)} como recebido"><div><div class="t">${esc(c.e.desc)}</div><div class="m">${esc(methodName(c.e.method))} · ${esc(c.e.cat)}${c.e.kind==='parcelado'?` · parcela ${c.i+1}/${c.n}`:''}${activeSplit(c.e)?` · parte de ${money(c.full)}`:''}</div></div><div style="display:flex;gap:8px;align-items:center"><span class="v num">${money(c.amount)}</span><button class="btn sm ghost" data-action="edit-exp" data-id="${c.e.id}" aria-label="Editar ${esc(c.e.desc)}">Editar</button></div></div>`;}).join('');
     return `<section class="card flush c6"><div class="card-h"><h2>${ptag(p.id)}</h2><button class="btn sm" data-action="edit-person" data-id="${p.id}">Editar</button></div>
       <div class="kpis" style="padding:12px 18px 14px"><div class="kpi"><span class="small muted">Em ${mShort(sel)}</span><b class="num">${money(tot)}</b></div><div class="kpi"><span class="small muted">A receber</span><b class="num ${owed>0?'neg':''}">${money(owed)}</b></div></div>
       ${before>0?`<p class="small muted" style="padding:0 18px 10px">Inclui ${money(before)} de meses anteriores ainda não recebidos.</p>`:''}
@@ -657,6 +684,23 @@ function render(){
   const tools=`<footer class="tools"><button data-action="imp-fatura">Importar fatura (CSV/OFX)</button><button data-action="export-csv">Exportar ${mShort(sel)} (CSV)</button><button data-action="export-json">Backup (JSON)</button><button data-action="import">Restaurar backup</button><button data-action="budgets">Orçamentos</button>${'Notification' in window?`<button data-action="notif">${Notification.permission==='granted'?'Lembretes de vencimento: ativos':'Ativar lembretes de vencimento'}</button>`:''}<button data-action="reset">Apagar tudo</button>${cloudLabel()?`<button data-action="account">${esc(cloudLabel())}</button>`:''}</footer>`;
   document.getElementById('app').innerHTML=demo+(views[tab]||views.painel)()+tools;
   const act=document.querySelector('#tabs a[aria-current]'); if(act&&act.scrollIntoView) act.scrollIntoView({inline:'center',block:'nearest'});
+}
+
+/* ---- divisão da compra: lê o formulário e valida ---- */
+const splitPeople=()=>[{id:'',name:'Eu'},...S.people.map(p=>({id:p.id,name:p.name}))];
+function readSplit(get,amount){
+  const mode=get('smode')||'none'; if(mode==='none') return {mode,parts:null};
+  const ps=splitPeople(), parts=[]; let sum=0;
+  ps.forEach((p,i)=>{
+    if(!get('sp'+i)) return;
+    const raw=get('sv'+i); const v=mode==='eq'?1:parseMoney(raw);
+    parts.push({who:p.id,w:isNaN(v)?0:v}); sum=r2(sum+(isNaN(v)?0:v));
+  });
+  if(parts.length<2) return {mode,parts:null,error:'Marque pelo menos 2 pessoas para dividir.'};
+  if(mode!=='eq'&&parts.some(p=>!(p.w>0))) return {mode,parts:null,sum,error:'Informe o '+(mode==='pct'?'percentual':'valor')+' de cada pessoa marcada.'};
+  if(mode==='pct'&&Math.abs(sum-100)>0.009) return {mode,parts,sum,error:'Os percentuais somam '+String(sum).replace('.',',')+'%; precisam somar 100%.'};
+  if(mode==='val'&&Math.abs(sum-amount)>0.009) return {mode,parts,sum,error:'Os valores somam '+money(sum)+'; precisam somar '+money(amount)+'.'};
+  return {mode,parts,sum};
 }
 
 /* ---- entrada rápida (botão +) ---- */
@@ -743,6 +787,7 @@ function expForm(id,presetKind){
   const e=id?S.expenses.find(x=>x.id===id):null;
   const d=Object.assign({who:''},e||{desc:'',kind:presetKind||'avista',amount:'',method:S.last.method&&(cardOf(S.last.method)||METHODS.some(m=>m.id===S.last.method))?S.last.method:(S.cards[0]?S.cards[0].id:'pix'),date:todayStr(),cat:'Outros',n:2,end:''});
   const methodOpts=[...S.cards.map(c=>[c.id,'Cartão '+c.name]),...METHODS.map(m=>[m.id,m.name])];
+  const sm=e&&activeSplit(e)?(e.splitMode||'val'):'none';
   const body=`
     ${field('Descrição',`<input name="desc" value="${esc(d.desc)}" maxlength="80" autocomplete="off" placeholder="Ex.: Notebook, Aluguel, Mercado">`)}
     <fieldset><legend>Tipo</legend>${seg('kind',[['avista','À vista'],['parcelado','Parcelado'],['fixo','Fixo mensal']],d.kind)}</fieldset>
@@ -757,8 +802,12 @@ function expForm(id,presetKind){
     </div>
     <div class="two">
       ${field('Categoria',`<select name="cat">${opts(CATS.map(c=>[c,c]),d.cat)}</select>`)}
-      ${field('De quem é',`<select name="who">${opts(whoOpts(),d.who||'')}</select>`,'Quem usou o cartão nesta compra.')}
+      <div id="w-who">${field('De quem é',`<select name="who">${opts(whoOpts(),d.who||'')}</select>`,'Quem usou o cartão nesta compra.')}</div>
     </div>
+    <fieldset><legend>Dividir esta compra com outras pessoas</legend>${seg('smode',[['none','Não'],['eq','Igual'],['pct','Por %'],['val','Por valor']],sm)}
+      <div id="w-split" hidden>${splitPeople().map((p,i)=>{const cur=(d.split||[]).find(x=>x.who===p.id);return `<label class="srow"><input class="chk" type="checkbox" name="sp${i}" ${cur?'checked':''} aria-label="Incluir ${esc(p.name)} na divisão"><span>${esc(p.name)}</span><input class="sv" name="sv${i}" inputmode="decimal" value="${cur&&sm!=='eq'?(sm==='pct'?String(cur.w).replace('.',','):fmtIn(cur.w)):''}" aria-label="Parte de ${esc(p.name)}"></label>`;}).join('')}
+      ${S.people.length?'':'<p class="muted small">Cadastre pessoas na aba Pessoas para dividir compras.</p>'}</div>
+    </fieldset>
     <div class="preview" id="prev" aria-live="polite"></div>`;
   openModal({title:e?'Editar lançamento':'Novo lançamento',body,onChange:f=>{
     const k=f.elements.kind.value; f.querySelector('#w-n').hidden=k!=='parcelado'; f.querySelector('#w-end').hidden=k!=='fixo';
@@ -773,6 +822,15 @@ function expForm(id,presetKind){
       else if(amt>0) t=`<b>${money(amt)}</b> em ${mShort(bm)}`;
       if(t&&isCard) t+=` · fatura de ${mShort(bm)}`;
     }
+    const sg=name=>{const el=f.elements[name];if(!el)return null;if(el.type==='checkbox')return el.checked?'on':null;return el.value;};
+    const mode=sg('smode')||'none';
+    f.querySelector('#w-split').hidden=mode==='none'; f.querySelector('#w-who').hidden=mode!=='none';
+    f.querySelectorAll('.sv').forEach(el=>{el.hidden=mode==='eq';el.placeholder=mode==='pct'?'%':'R$';});
+    if(mode!=='none'){
+      const r=readSplit(sg,amt);
+      if(r.parts&&!r.error&&amt>0){const sh=splitAmount(amt,r.parts.map(p=>p.w));t+=(t?'<br>':'')+'Cada um paga '+(k==='parcelado'?'do total: ':k==='fixo'?'por mês: ':'')+r.parts.map((p,i)=>`${esc(p.who?pName(p.who):'Eu')} <b>${money(sh[i])}</b>`).join(' · ');}
+      else if(r.error) t+=(t?'<br>':'')+`<span class="muted">${esc(r.error)}</span>`;
+    }
     f.querySelector('#prev').innerHTML=t||'<span class="muted">Preencha valor e data para ver como isso cai nos meses.</span>';
   },onSubmit:fd=>{
     const kind=fd.get('kind'), desc=String(fd.get('desc')).trim(), amount=parseMoney(fd.get('amount')), date=fd.get('date'), n=parseInt(fd.get('n'))||1, end=fd.get('end')||'';
@@ -780,12 +838,25 @@ function expForm(id,presetKind){
     if(!(amount>0)) return 'Informe um valor maior que zero.';
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) return 'Informe a data.';
     if(kind==='parcelado'&&(n<1||n>60)) return 'Parcelas: de 1 a 60.';
-    const rec={id:e?e.id:uid(),desc,kind,amount,method:fd.get('method'),date,cat:fd.get('cat'),who:fd.get('who')||'',n:kind==='parcelado'?n:1,end:kind==='fixo'?end:''};
+    const sp=readSplit(k=>fd.get(k),amount); if(sp.error) return sp.error;
+    const rec={id:e?e.id:uid(),desc,kind,amount,method:fd.get('method'),date,cat:fd.get('cat'),who:sp.parts?'':(fd.get('who')||''),n:kind==='parcelado'?n:1,end:kind==='fixo'?end:''};
+    if(sp.parts){rec.split=sp.parts;rec.splitMode=sp.mode;}
     if(e&&e.bill) rec.bill=e.bill;
     if(e) S.expenses[S.expenses.indexOf(e)]=rec; else S.expenses.push(rec);
     learnCat(S,desc,rec.cat); S.last={method:rec.method,cat:rec.cat};
     commit();
-  },onDelete:e?()=>{S.expenses=S.expenses.filter(x=>x.id!==e.id);Object.keys(S.paid).forEach(k=>{if(k.startsWith(e.id+'#'))delete S.paid[k];});commit();}:null});
+  },onDelete:e?()=>{S.expenses=S.expenses.filter(x=>x.id!==e.id);for(const m of [S.paid,S.settled])Object.keys(m).forEach(k=>{if(k.startsWith(e.id+'#'))delete m[k];});commit();}:null});
+  /* ao escolher dividir, já marca "Eu" e a pessoa do campo "De quem é" (ou a primeira cadastrada) */
+  const form=modalEl.querySelector('form');
+  form.addEventListener('change',ev=>{
+    if(ev.target.name!=='smode'||ev.target.value==='none') return;
+    const boxes=splitPeople().map((p,i)=>form.elements['sp'+i]);
+    if(boxes.filter(b=>b.checked).length>=2) return;
+    boxes[0].checked=true;
+    const who=form.elements.who.value, idx=who?splitPeople().findIndex(p=>p.id===who):-1;
+    const other=idx>0?idx:(boxes.length>1?1:-1); if(other>0) boxes[other].checked=true;
+    form.dispatchEvent(new Event('input',{bubbles:true}));
+  });
 }
 async function readText(file){
   const buf=await file.arrayBuffer();
@@ -854,11 +925,11 @@ function personForm(id){
     const rec={id:p?p.id:'pe'+uid(),name,color:fd.get('color')||SWATCH[0]};
     if(p) S.people[S.people.indexOf(p)]=rec; else S.people.push(rec);
     commit();
-  },onDelete:p?()=>{if(S.expenses.some(e=>e.who===p.id))return 'Há lançamentos com esta etiqueta. Mude a pessoa deles antes de excluir.';S.people=S.people.filter(x=>x.id!==p.id);if(pfilter===p.id)pfilter='todos';commit();}:null});
+  },onDelete:p?()=>{if(S.expenses.some(e=>e.who===p.id||(e.split||[]).some(x=>x.who===p.id)))return 'Há lançamentos com esta etiqueta. Mude a pessoa deles antes de excluir.';S.people=S.people.filter(x=>x.id!==p.id);if(pfilter===p.id)pfilter='todos';commit();}:null});
 }
 function summaryText(pid){
-  const p=personOf(pid), ch=inMonth(sel).filter(c=>c.e.who===pid);
-  const lines=ch.map(c=>`- ${c.e.desc}${c.e.kind==='parcelado'?` (${c.i+1}/${c.n})`:''}: ${money(c.amount)}`);
+  const p=personOf(pid), ch=inMonth(sel).filter(c=>c.who===pid);
+  const lines=ch.map(c=>`- ${c.e.desc}${c.e.kind==='parcelado'?` (${c.i+1}/${c.n})`:''}: ${money(c.amount)}${activeSplit(c.e)?` (sua parte de ${money(c.full)})`:''}`);
   return `${p.name}, gastos de ${mShort(sel)}:\n${lines.join('\n')}\nTotal: ${money(r2(ch.reduce((s,c)=>s+c.amount,0)))}`;
 }
 async function copySummary(pid){
@@ -931,7 +1002,7 @@ async function saveFile(filename,data){
 function exportCsv(){
   const q=s=>'"'+String(s).replace(/"/g,'""')+'"';
   const rows=[['Mês','Descrição','Categoria','De quem','Pagamento','Tipo','Parcela','Valor','Pago']];
-  inMonth(sel).forEach(c=>rows.push([sel,c.e.desc,c.e.cat,pName(c.e.who),methodName(c.e.method),KIND[c.e.kind],c.e.kind==='parcelado'?`${c.i+1}/${c.n}`:'',fmtIn(c.amount),paid(c)?'sim':'não']));
+  inMonth(sel).forEach(c=>rows.push([sel,c.e.desc,c.e.cat,pName(c.who),methodName(c.e.method),KIND[c.e.kind],c.e.kind==='parcelado'?`${c.i+1}/${c.n}`:'',fmtIn(c.amount),paid(c)?'sim':'não']));
   saveFile('caixa-'+sel+'.csv','﻿'+rows.map(r=>r.map(q).join(';')).join('\n'));
 }
 
@@ -963,7 +1034,7 @@ document.addEventListener('click',ev=>{
     case 'new-person': personForm(); break;
     case 'edit-person': personForm(id); break;
     case 'copy-summary': copySummary(id); break;
-    case 'settle-month': {const ch=inMonth(sel).filter(c=>c.e.who===id);const all=ch.length&&ch.every(c=>S.settled[c.key]);ch.forEach(c=>{S.settled[c.key]=!all;});commit();break;}
+    case 'settle-month': {const ch=inMonth(sel).filter(c=>c.who===id);const all=ch.length&&ch.every(c=>S.settled[c.key]);ch.forEach(c=>{S.settled[c.key]=!all;});commit();break;}
     case 'new-exp': expForm(null,t.dataset.kind); break;
     case 'edit-exp': expForm(id); break;
     case 'imp-fatura': impForm(id); break;
@@ -976,7 +1047,7 @@ document.addEventListener('click',ev=>{
     case 'contrib': contribForm(id,Number(t.dataset.s)); break;
     case 'del-contrib': {const p=S.projects.find(x=>x.id===t.dataset.pid);if(p){p.contribs=p.contribs.filter(c=>c.id!==id);commit();}break;}
     case 'end-fixo': {const e=S.expenses.find(x=>x.id===id);if(e){e.end=CUR;commit();toast('Encerrado: vale até '+mShort(CUR)+'.');}break;}
-    case 'pay-card': inMonth(sel).filter(c=>c.e.method===id).forEach(c=>{S.paid[c.key]=t.dataset.v==='1';}); commit(); break;
+    case 'pay-card': inMonth(sel).filter(c=>c.e.method===id).forEach(c=>{S.paid[c.pkey]=t.dataset.v==='1';}); commit(); break;
     case 'clear-demo': confirmModal('Limpar exemplos','Isso remove todos os dados de exemplo e deixa o app vazio para você começar.','Limpar',()=>{S=emptyState();commit();}); break;
     case 'reset': confirmModal('Apagar tudo','Isso apaga cartões, lançamentos, renda e projetos. Faça um backup antes, se quiser guardar.','Apagar tudo',()=>{S=emptyState();commit();}); break;
     case 'export-csv': exportCsv(); break;

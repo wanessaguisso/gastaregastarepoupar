@@ -7,6 +7,7 @@ App web de finanças pessoais (HTML/CSS/JS puro, sem framework). Instalável no 
 - **Painel**: sobra prevista, divisão da renda, projeção de 12 meses, vencimentos próximos e alertas de orçamento.
 - **Orçamento por categoria**: teto mensal com aviso a partir de 80%.
 - **Lembretes de vencimento**: faturas e boletos (notificação local ao abrir o app).
+- **Dividir compra com outras pessoas**: em qualquer lançamento (à vista, parcelado ou fixo), divida **igual**, **por %** ou **por valor** entre você e quem cadastrou em Pessoas. A fatura e o limite do cartão continuam com o valor inteiro, mas só a sua parte entra nos seus gastos, e cada pessoa tem a própria parte a receber, com acerto individual por parcela.
 - **Cartões, Parcelas, Pessoas, Fixos e renda, Projetos**.
 - **Importar fatura** em **CSV ou OFX**; o app aprende suas categorias (descrições parecidas viram a mesma categoria).
 - Backup/restauração em JSON, exportação CSV, tema claro/escuro.

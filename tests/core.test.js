@@ -8,7 +8,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const core = src.match(/\/\/<core>([\s\S]*?)\/\/<\/core>/)[1];
 const C = new Function(core + `;return {addM,diffM,r2,parseMoney,billMonth,installmentAmount,chargesOf,allCharges,isPaid,
   incomeIn,totalsOf,projInfo,plannedIn,parseCsv,parseAmount,parseDateAny,parseFatura,guessCat,learnCat,memKey,isOfx,parseOfx,
-  budgetStatus,dueList,ensureState,emptyState,seed,dateOf};`)();
+  budgetStatus,dueList,splitAmount,activeSplit,ensureState,emptyState,seed,dateOf};`)();
 
 const cards = [{ id: 'c1', name: 'Nubank', closing: 3, due: 10 }, { id: 'c2', name: 'Itaú', closing: 20, due: 27 }];
 
@@ -146,8 +146,11 @@ test('dueList: fatura aberta, boleto e atrasos; pagos saem da lista', () => {
   S.expenses = ex;
   const ch = C.allCharges(S, '2027-01');
   const l = C.dueList(S, ch, '2026-11-09', 7);
-  assert.deepEqual(l.map(d => [d.label, d.amount, d.days]), [['Fatura Nubank', 200, 1], ['Internet', 80, 3]]);
+  // a fatura é paga inteira (200 + 99 de terceiro); quem deve o quê é tratado na aba Pessoas
+  assert.deepEqual(l.map(d => [d.label, d.amount, d.days]), [['Fatura Nubank', 299, 1], ['Internet', 80, 3]]);
   S.paid['a#0'] = true;
+  assert.equal(C.dueList(S, C.allCharges(S, '2027-01'), '2026-11-09', 7).length, 2); // sobra a fatura (o gasto de terceiro segue aberto) e o boleto
+  S.paid['c#0'] = true;
   assert.equal(C.dueList(S, C.allCharges(S, '2027-01'), '2026-11-09', 7).length, 1);
   // atrasada (não paga, mês anterior desmarcado)
   S.paid['a#0'] = false; const late = C.dueList(S, C.allCharges(S, '2027-01'), '2026-11-15', 7);
@@ -159,4 +162,48 @@ test('seed e ensureState sempre produzem estado completo', () => {
   for (const k of ['budgets', 'catMem', 'last', 'people', 'settled', 'paid']) assert.ok(S[k] !== undefined, k);
   const E = C.ensureState({});
   assert.deepEqual([E.cards, E.expenses, E.income, E.projects], [[], [], [], []]);
+});
+
+test('splitAmount: partes somam exatamente o total, resto de centavos vai para os primeiros', () => {
+  assert.deepEqual(C.splitAmount(100, [1, 1, 1]), [33.34, 33.33, 33.33]);
+  assert.deepEqual(C.splitAmount(100, [50, 30, 20]), [50, 30, 20]);
+  assert.deepEqual(C.splitAmount(0.05, [1, 1, 1]), [0.02, 0.02, 0.01]);
+  for (const [t, w] of [[999.99, [1, 1, 1, 1, 1, 1, 1]], [4800, [3, 5, 7]], [10.01, [33.33, 33.33, 33.34]]]) {
+    assert.equal(C.r2(C.splitAmount(t, w).reduce((a, b) => a + b, 0)), t);
+  }
+  assert.deepEqual(C.splitAmount(10, [0, 0]), [0, 0]);
+});
+
+test('compra dividida vira partes por pessoa; fatura/pagamento continuam inteiros', () => {
+  const e = { id: 'x', kind: 'parcelado', amount: 300, n: 3, method: 'c1', date: '2026-11-01', desc: 'TV',
+    split: [{ who: '', w: 1 }, { who: 'pe1', w: 1 }, { who: 'pe2', w: 1 }] };
+  const ch = C.chargesOf(e, cards, '2027-06');
+  assert.equal(ch.length, 9); // 3 parcelas x 3 pessoas
+  const mes1 = ch.filter(c => c.ym === '2026-11');
+  assert.deepEqual(mes1.map(c => [c.who, c.amount]), [['', 33.34], ['pe1', 33.33], ['pe2', 33.33]]);
+  assert.equal(C.r2(mes1.reduce((a, c) => a + c.amount, 0)), 100); // soma = parcela cheia
+  assert.equal(new Set(ch.map(c => c.key)).size, 9);              // chaves únicas por parte (acerto individual)
+  assert.equal(new Set(mes1.map(c => c.pkey)).size, 1);           // mesma chave de pagamento
+  assert.equal(mes1.filter(c => c.lead).length, 1);
+  assert.ok(mes1.every(c => c.full === 100));
+});
+
+test('pagar a fatura marca todas as partes; acerto da pessoa é independente', () => {
+  const S = C.ensureState({ cards, expenses: [{ id: 'x', kind: 'avista', amount: 90, method: 'c1', date: '2026-11-01', desc: 'Jantar', who: '',
+    split: [{ who: '', w: 1 }, { who: 'pe1', w: 1 }] }] });
+  const ch = C.allCharges(S, '2027-01');
+  assert.equal(ch.length, 2);
+  assert.ok(ch.every(c => C.isPaid(S, c, '2026-11') === false));
+  S.paid[ch[0].pkey] = true;
+  assert.ok(ch.every(c => C.isPaid(S, c, '2026-11') === true));
+  S.settled[ch[1].key] = true; // só a parte da pessoa
+  assert.equal(!!S.settled[ch[0].key], false);
+});
+
+test('split inválido (1 participante ou peso zero) é ignorado e vale o "who"', () => {
+  assert.equal(C.activeSplit({ split: [{ who: '', w: 1 }] }), null);
+  assert.equal(C.activeSplit({ split: [{ who: '', w: 1 }, { who: 'pe1', w: 0 }] }), null);
+  const e = { id: 'y', kind: 'avista', amount: 50, method: 'pix', date: '2026-11-01', who: 'pe1', split: [{ who: '', w: 1 }] };
+  const ch = C.chargesOf(e, cards, '2027-01');
+  assert.deepEqual(ch.map(c => [c.who, c.amount, c.key]), [['pe1', 50, 'y#0']]); // chave antiga preservada
 });
