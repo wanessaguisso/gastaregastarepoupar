@@ -3,3 +3,4 @@
 // nem a chave "service_role".
 window.SUPABASE_URL = 'https://jpbfezjhtvicuusdankd.supabase.co';
 window.SUPABASE_ANON_KEY = ''; // cole aqui: Supabase > Project Settings > API > anon public
+window.ALLOW_SIGNUP = true; // false esconde o botão "Criar conta" (desative também no Supabase)

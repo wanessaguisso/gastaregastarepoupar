@@ -332,15 +332,16 @@ async function persist(){
   saving=true;
   try{
     await saveRef.set({data:JSON.parse(JSON.stringify(S)),savedAt:Date.now()});
-    setStatus('Salvo na sua conta');
+    setStatus('Salvo na sua conta'); lastSaveOk=true;
   }catch(e){
+    lastSaveOk=false;
     if(e&&e.conflict){conflictAsk();}
     else setStatus('Não salvou na nuvem; cópia local mantida');
   }
   saving=false;
   if(pending){pending=false;persist();}
 }
-let sb=null, sbUser=null, lastRemote=null, conflictOpen=false;
+let sb=null, sbUser=null, lastRemote=null, conflictOpen=false, lastSaveOk=true;
 function cloudLabel(){return sbUser?'Conta: '+sbUser.email:(window.SUPABASE_ANON_KEY?'Entrar para sincronizar':'');}
 function makeRef(){
   return {set:async o=>{
@@ -380,47 +381,144 @@ async function resolveConflict(keepMine){
   }catch(e){conflictOpen=false;setStatus('Sem conexão com a nuvem; usando cópia local');}
   closeModal();
 }
+/* ---- login obrigatório: o app só abre depois de entrar ---- */
+const LOCKED=!!window.SUPABASE_ANON_KEY;
+let gateMode='login', gateBusy=false, userSignedOut=false, offlineUser=null;
+const gateEl=()=>document.getElementById('gate');
+function lock(on){document.body.classList.toggle('locked',on);const g=gateEl();if(g)g.hidden=!on;}
+function authMsg(m){
+  m=String(m||'');
+  if(/invalid login|invalid credentials/i.test(m)) return 'E-mail ou senha incorretos.';
+  if(/not confirmed/i.test(m)) return 'Confirme seu e-mail antes de entrar (veja a caixa de entrada e o spam).';
+  if(/already registered|already been registered/i.test(m)) return 'Este e-mail já tem conta. Entre ou use "Esqueci a senha".';
+  if(/signups? not allowed|signup.*disabled/i.test(m)) return 'Novos cadastros estão desativados.';
+  if(/rate limit|too many|security purposes/i.test(m)) return 'Muitas tentativas. Espere um minuto e tente de novo.';
+  if(/password should|at least/i.test(m)) return 'A senha precisa ter pelo menos 6 caracteres.';
+  if(/network|fetch|failed/i.test(m)) return 'Sem conexão com a internet.';
+  return 'Não deu certo: '+m;
+}
+function renderGate(state,msg,kind){
+  const g=gateEl(); if(!g) return; lock(true);
+  const brand='<div class="gate-brand">Meu Caixa</div>';
+  if(state==='loading'){g.innerHTML=`<div class="gate-card">${brand}<p class="muted" role="status">Abrindo…</p></div>`;return;}
+  if(state==='fatal'){g.innerHTML=`<div class="gate-card">${brand}<p class="err" role="alert">${esc(msg)}</p><button class="btn primary" onclick="location.reload()">Tentar de novo</button></div>`;return;}
+  gateMode=state;
+  const title={login:'Entrar',signup:'Criar conta',forgot:'Recuperar senha'}[state];
+  const canSignup=window.ALLOW_SIGNUP!==false;
+  g.innerHTML=`<form class="gate-card" novalidate>${brand}<h1 class="gate-h">${title}</h1>
+    ${field('E-mail','<input id="g-email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" autocorrect="off">')}
+    ${state==='forgot'?'':field('Senha',`<input id="g-pw" type="password" autocomplete="${state==='login'?'current-password':'new-password'}">`,state==='signup'?'Mínimo de 6 caracteres.':'')}
+    ${state==='signup'?field('Repita a senha','<input id="g-pw2" type="password" autocomplete="new-password">'):''}
+    <p id="gmsg" class="${kind==='ok'?'gate-ok':'err'}" role="alert">${esc(msg||'')}</p>
+    <button type="button" class="btn primary" data-action="gate-go" id="g-go">${{login:'Entrar',signup:'Criar conta',forgot:'Enviar link'}[state]}</button>
+    <div class="gate-links">
+      ${state==='login'?`<button type="button" data-action="gate-mode" data-mode="forgot">Esqueci a senha</button>${canSignup?'<button type="button" data-action="gate-mode" data-mode="signup">Criar conta</button>':''}`:`<button type="button" data-action="gate-mode" data-mode="login">Voltar para entrar</button>`}
+    </div></form>`;
+  g.querySelector('form').addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();gateGo();}});
+}
+async function gateGo(){
+  if(gateBusy||!sb) return;
+  const email=(document.getElementById('g-email')||{}).value||'', pw=(document.getElementById('g-pw')||{}).value||'', pw2=(document.getElementById('g-pw2')||{}).value||'';
+  const say=(m,k)=>renderGate(gateMode,m,k), keep=()=>{const e=document.getElementById('g-email');if(e)e.value=email.trim();};
+  const em=email.trim();
+  if(!/^\S+@\S+\.\S+$/.test(em)){say('Informe um e-mail válido.');keep();return;}
+  gateBusy=true; const btn=document.getElementById('g-go'); if(btn){btn.disabled=true;btn.textContent='Aguarde…';}
+  try{
+    if(gateMode==='login'){
+      if(!pw){gateBusy=false;say('Informe a senha.');keep();return;}
+      const r=await sb.auth.signInWithPassword({email:em,password:pw});
+      if(r.error){gateBusy=false;say(authMsg(r.error.message));keep();return;}
+    }else if(gateMode==='signup'){
+      if(window.ALLOW_SIGNUP===false){gateBusy=false;say('Novos cadastros estão desativados.');return;}
+      if(pw.length<6){gateBusy=false;say('A senha precisa ter pelo menos 6 caracteres.');keep();return;}
+      if(pw!==pw2){gateBusy=false;say('As senhas não são iguais.');keep();return;}
+      const r=await sb.auth.signUp({email:em,password:pw});
+      if(r.error){gateBusy=false;say(authMsg(r.error.message));keep();return;}
+      if(!r.data.session){gateBusy=false;renderGate('login','Conta criada. Confirme pelo e-mail que enviamos e depois entre.','ok');const e=document.getElementById('g-email');if(e)e.value=em;return;}
+    }else{
+      const r=await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname});
+      if(r.error){gateBusy=false;say(authMsg(r.error.message));keep();return;}
+      gateBusy=false;renderGate('login','Se esse e-mail tiver conta, enviamos um link para criar uma nova senha.','ok');const e=document.getElementById('g-email');if(e)e.value=em;return;
+    }
+  }catch(e){gateBusy=false;say(authMsg(e&&e.message));keep();return;}
+  gateBusy=false;
+}
+/* dados deste aparelho pertencem a quem entrou por último; outra conta nunca herda */
+function wipeLocal(){
+  for(const k of ['meu-caixa-v1','meu-caixa-pre-sync','meu-caixa-notif','meu-caixa-owner']){try{localStorage.removeItem(k);}catch(e){}}
+  S=ensureState(seed(CUR)); lastRemote=null; loadedFromCloud=false;
+}
+const ownerKey='meu-caixa-owner';
 async function onSession(session){
-  sbUser=session?session.user:null; saveRef=null;
-  if(!sbUser){setStatus('Salvo só neste navegador');render();return;}
+  const u=session?session.user:null;
+  if(u&&sbUser&&u.id===sbUser.id&&saveRef) return;   // o app reemite SIGNED_IN ao voltar para a aba: não rebaixa dados
+  sbUser=u; saveRef=null; offlineUser=null;
+  if(!u){
+    if(userSignedOut){wipeLocal();userSignedOut=false;}
+    renderGate('login'); setStatus(''); return;
+  }
+  let owner=null; try{owner=localStorage.getItem(ownerKey);}catch(e){}
+  if(owner&&owner!==u.id) wipeLocal();
+  try{localStorage.setItem(ownerKey,u.id);}catch(e){}
+  lock(false);
   try{
     saveRef=makeRef();
     const had=await pullRemote(true);
     setStatus(had?'Salvo na sua conta':(S.demo?'Exemplo: ainda não salvo':'Sincronizando…'));
     if(!had&&!S.demo) await persist();
     render();
-  }catch(e){saveRef=null;setStatus('Sem conexão com a nuvem; usando cópia local');}
+  }catch(e){saveRef=null;setStatus('Sem conexão com a nuvem; usando cópia local');render();}
+}
+/* sem internet e já logado antes: deixa abrir com os dados deste aparelho */
+function tryOfflineUnlock(){
+  try{
+    if(navigator.onLine!==false) return false;
+    const ref=new URL(window.SUPABASE_URL).hostname.split('.')[0];
+    const raw=JSON.parse(localStorage.getItem('sb-'+ref+'-auth-token')||'null');
+    if(!raw||!raw.user||localStorage.getItem(ownerKey)!==raw.user.id) return false;
+    offlineUser=raw.user; sbUser=raw.user; saveRef=null; lock(false); setStatus('Offline: salvando só neste aparelho'); render();
+    window.addEventListener('online',()=>location.reload(),{once:true});
+    return true;
+  }catch(e){return false;}
 }
 async function initCloud(){
-  if(!window.SUPABASE_ANON_KEY||!window.supabase){setStatus('Salvo só neste navegador');return;}
+  if(!LOCKED){setStatus('Salvo só neste navegador');return;}
+  if(!window.supabase){ if(!tryOfflineUnlock()) renderGate('fatal','Não consegui carregar o login. Abra o app com internet.'); return; }
   try{
     sb=window.supabase.createClient(window.SUPABASE_URL,window.SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
-    sb.auth.onAuthStateChange((ev,session)=>{ if(ev==='SIGNED_IN'||ev==='SIGNED_OUT'||ev==='INITIAL_SESSION') setTimeout(()=>onSession(session),0); });
+    sb.auth.onAuthStateChange((ev,session)=>{
+      if(ev==='PASSWORD_RECOVERY'){setTimeout(async()=>{await onSession(session);passwordForm(true);},0);return;}
+      if(ev==='SIGNED_IN'||ev==='SIGNED_OUT'||ev==='INITIAL_SESSION'){
+        if(ev==='INITIAL_SESSION'&&!session&&tryOfflineUnlock()) return;
+        setTimeout(()=>onSession(session),0);
+      }
+    });
     document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&sbUser&&saveRef&&!saving&&!pending&&!conflictOpen) pullRemote(false).catch(()=>{}); });
-  }catch(e){setStatus('Salvo só neste navegador');}
+  }catch(e){renderGate('fatal','Não consegui iniciar o login.');}
+}
+async function doSignOut(){
+  try{
+    if(saveRef){clearTimeout(timer);await persist(); if(!lastSaveOk){toast('Não consegui sincronizar. Conecte-se à internet antes de sair para não perder dados.');return;}}
+    userSignedOut=true;
+    if(offlineUser){wipeLocal();location.reload();return;}
+    await sb.auth.signOut();
+  }catch(e){toast('Não consegui sair agora.');userSignedOut=false;}
 }
 function openAccount(){
-  if(!sb){toast('Sincronização não configurada.');return;}
-  if(sbUser){
-    openModal({title:'Sua conta',body:`<p>Conectado como <b>${esc(sbUser.email)}</b>.</p><p class="muted small">Seus dados são sincronizados entre os aparelhos em que você entrar com esta conta.</p>`,submit:'Sair',danger:true,onSubmit:()=>{sb.auth.signOut();}});
-    return;
-  }
-  openModal({title:'Entrar para sincronizar',submit:'Entrar',
-    body:field('E-mail','<input name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none">')+field('Senha','<input name="pw" type="password" autocomplete="current-password">','Mínimo de 6 caracteres.')+`<button type="button" class="btn" data-action="auth-up">Criar conta nova</button>`,
-    onSubmit:f=>{
-      const email=String(f.get('email')||'').trim(), pw=String(f.get('pw')||'');
-      if(!email||!pw) return 'Informe e-mail e senha.';
-      sb.auth.signInWithPassword({email,password:pw}).then(r=>{ if(r.error) toast('Não entrou: '+(/invalid/i.test(r.error.message)?'e-mail ou senha incorretos.':r.error.message)); else toast('Conectado.'); });
-    }});
+  if(!sb&&!offlineUser){toast('Login não configurado.');return;}
+  openModal({title:'Sua conta',submit:'Sair',danger:true,
+    body:`<p>Conectado como <b>${esc(sbUser?sbUser.email:'')}</b>.</p><p class="muted small">Ao sair, os dados saem deste aparelho e continuam salvos na sua conta.</p>${offlineUser?'':'<button type="button" class="btn" data-action="pw-change">Alterar senha</button>'}`,
+    onSubmit:()=>{doSignOut();}});
 }
-async function signUp(){
-  const f=modalEl&&modalEl.querySelector('form'); if(!f) return;
-  const email=f.email.value.trim(), pw=f.pw.value;
-  if(!email||pw.length<6){setErr('Informe e-mail e uma senha de pelo menos 6 caracteres.');return;}
-  const r=await sb.auth.signUp({email,password:pw});
-  if(r.error){setErr(r.error.message);return;}
-  closeModal();
-  toast(r.data.session?'Conta criada e conectada.':'Conta criada. Confirme pelo e-mail que enviamos e depois entre.');
+function passwordForm(recovery){
+  openModal({title:recovery?'Crie uma nova senha':'Alterar senha',submit:'Salvar senha',
+    body:field('Nova senha','<input name="pw" type="password" autocomplete="new-password">','Mínimo de 6 caracteres.')+field('Repita a nova senha','<input name="pw2" type="password" autocomplete="new-password">'),
+    onSubmit:f=>{
+      const pw=String(f.get('pw')||''), pw2=String(f.get('pw2')||'');
+      if(pw.length<6) return 'A senha precisa ter pelo menos 6 caracteres.';
+      if(pw!==pw2) return 'As senhas não são iguais.';
+      sb.auth.updateUser({password:pw}).then(r=>toast(r.error?authMsg(r.error.message):'Senha alterada.'));
+    }});
 }
 
 /* ---- derived ---- */
@@ -1045,7 +1143,9 @@ document.addEventListener('click',ev=>{
     case 'budgets': budgetsForm(); break;
     case 'notif': enableNotif(); break;
     case 'conflict-remote': resolveConflict(false); break;
-    case 'auth-up': signUp(); break;
+    case 'gate-go': gateGo(); break;
+    case 'gate-mode': renderGate(t.dataset.mode); break;
+    case 'pw-change': closeModal(); passwordForm(false); break;
     case 'prev': sel=addM(sel,-1); render(); break;
     case 'next': sel=addM(sel,1); render(); break;
     case 'today': sel=CUR; render(); break;
@@ -1093,6 +1193,7 @@ const TABS=['painel','mes','cartoes','parcelas','pessoas','fixos','projetos'];
 function route(){const h=location.hash.replace('#','');tab=TABS.includes(h)?h:'painel';render();}
 window.addEventListener('hashchange',route);
 
+if(LOCKED){lock(true);renderGate('loading');}
 route();
 window.addEventListener("load",()=>{initCloud();notifyDues();});
 if("serviceWorker" in navigator&&location.protocol!=="file:"){window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));}

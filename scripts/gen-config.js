@@ -6,6 +6,7 @@ const key = process.env.SUPABASE_ANON_KEY || '';
 if (/service_role/i.test(key) || (key.split('.').length === 3 && /"role"\s*:\s*"service_role"/.test(Buffer.from(key.split('.')[1], 'base64url').toString()))) {
   console.error('ERRO: essa é a chave service_role. Use a chave anon public.'); process.exit(1);
 }
+const allowSignup = String(process.env.ALLOW_SIGNUP || 'true').toLowerCase() !== 'false';
 fs.writeFileSync('supabase-config.js',
-  `window.SUPABASE_URL=${JSON.stringify(url)};\nwindow.SUPABASE_ANON_KEY=${JSON.stringify(key)};\n`);
-console.log(key ? 'supabase-config.js gerado com a chave anon.' : 'Sem SUPABASE_ANON_KEY: app roda só local.');
+  `window.SUPABASE_URL=${JSON.stringify(url)};\nwindow.SUPABASE_ANON_KEY=${JSON.stringify(key)};\nwindow.ALLOW_SIGNUP=${allowSignup};\n`);
+console.log(key ? 'supabase-config.js gerado com a chave anon; cadastro ' + (allowSignup ? 'liberado.' : 'desativado.') : 'Sem SUPABASE_ANON_KEY: app roda só local, SEM login.');

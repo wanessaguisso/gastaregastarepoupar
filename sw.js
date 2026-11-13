@@ -1,5 +1,5 @@
 // Service worker: guarda o app para abrir offline. Aumente VERSION ao publicar mudanças.
-const VERSION = 'meu-caixa-v5';
+const VERSION = 'meu-caixa-v6';
 const CORE = ['./', './index.html', './styles.css', './app.js', './vendor-supabase.js', './manifest.webmanifest', './supabase-config.js',
   './fonts/bricolage.woff2', './fonts/public-sans.woff2',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
